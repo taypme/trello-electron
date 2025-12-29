@@ -1,21 +1,15 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const electron = require('electron');
+const {app, BrowserWindow, Menu, shell} = require('electron');
 const config = require('./config');
-
-const app = electron.app;
-
-require('electron-debug')();
-require('electron-dl')();
-require('electron-context-menu')();
 
 let mainWindow;
 let isQuitting = false;
 
 function createMainWindow() {
   const lastWindowState = config.get('lastWindowState');
-  const win = new electron.BrowserWindow({
+  const win = new BrowserWindow({
     title: app.getName(),
     show: false,
     x: lastWindowState.x,
@@ -30,7 +24,7 @@ function createMainWindow() {
     webPreferences: {
       nodeIntegration: false,
       preload: path.join(__dirname, 'browser.js'),
-      plugins: true
+      contextIsolation: true
     }
   });
 
@@ -59,34 +53,45 @@ function createMainWindow() {
   return win;
 }
 
-app.on('ready', () => {
+async function initializeHelpers() {
+  try {
+    const {default: electronDebug} = await import('electron-debug');
+    electronDebug({showDevTools: false});
+  } catch (error) {
+    console.warn('Failed to load electron-debug:', error);
+  }
+
+  try {
+    const {default: electronDl} = await import('electron-dl');
+    electronDl();
+  } catch (error) {
+    console.warn('Failed to load electron-dl:', error);
+  }
+
+  try {
+    const {default: contextMenu} = await import('electron-context-menu');
+    contextMenu();
+  } catch (error) {
+    console.warn('Failed to load electron-context-menu:', error);
+  }
+}
+
+app.whenReady().then(async () => {
+  await initializeHelpers();
   mainWindow = createMainWindow();
   const page = mainWindow.webContents;
 
   page.on('dom-ready', () => {
-    page.insertCSS(fs.readFileSync(path.join(__dirname, 'browser.css'), 'utf8'));
+    const css = fs.readFileSync(path.join(__dirname, 'browser.css'), 'utf8');
+    page.insertCSS(css).catch(error => {
+      console.warn('Failed to insert CSS:', error);
+    });
     mainWindow.show();
   });
 
-  page.on('new-window', (e, url) => {
-    e.preventDefault();
-    electron.shell.openExternal(url);
-  });
-
-  mainWindow.webContents.session.on('will-download', (event, item) => {
-    const totalBytes = item.getTotalBytes();
-
-    item.on('updated', () => {
-      mainWindow.setProgressBar(item.getReceivedBytes() / totalBytes);
-    });
-
-    item.on('done', (e, state) => {
-      mainWindow.setProgressBar(-1);
-
-      if (state === 'interrupted') {
-        electron.Dialog.showErrorBox('Download error', 'The download was interrupted');
-      }
-    });
+  page.setWindowOpenHandler(({url}) => {
+    shell.openExternal(url);
+    return {action: 'deny'};
   });
 
   const template = [{
@@ -114,7 +119,7 @@ app.on('ready', () => {
   }
   ];
 
-  electron.Menu.setApplicationMenu(electron.Menu.buildFromTemplate(template));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 });
 
 app.on('window-all-closed', () => {
@@ -122,6 +127,11 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createMainWindow();
+    return;
+  }
+
   mainWindow.show();
 });
 
